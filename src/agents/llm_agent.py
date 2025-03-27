@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from openai import OpenAI
 from .base_agent import Agent
 from src.models.world import World
@@ -21,9 +21,9 @@ class LLMAgent(Agent):
             base_url=self.config.base_url,
             api_key=api_key
         )
-        self.recent_actions: List[str] = []  # Track recent actions
+        self.recent_actions: List[Dict[str, Any]] = []  # Track recent actions with narratives
         
-    def decide(self, world: World) -> str:
+    def decide(self, world: World) -> Dict[str, Any]:
         """
         Use LLM to make decisions based on perception
         
@@ -31,15 +31,24 @@ class LLMAgent(Agent):
             world: Current world state
             
         Returns:
-            Decision string describing chosen action
+            Dict containing decision and narrative
         """
         perception = self.perceive(world)
         
         # Add recent actions to perception
         if self.recent_actions:
-            perception += f"\n\nYour recent actions: {', '.join(self.recent_actions[-3:])}"
+            recent_narratives = [action["narrative"] for action in self.recent_actions[-3:]]
+            perception += f"\n\nYour recent actions:\n" + "\n".join(recent_narratives)
         
-        prompt = self._build_decision_prompt(perception)
+        # Get country's ideology from world state
+        country = world.get_country(self.country_name)
+        if not country:
+            return {
+                "action": "Do nothing",
+                "narrative": f"Unable to find country data for {self.country_name}"
+            }
+            
+        prompt = self._build_decision_prompt(perception, country.ideology)
         
         try:
             response = self.client.chat.completions.create(
@@ -48,29 +57,33 @@ class LLMAgent(Agent):
                     "role": "user",
                     "content": prompt
                 }],
-                max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature if self.config.temperature is not None else 0.7,
-                top_p=self.config.top_p if self.config.top_p is not None else 0.95,
+                max_tokens=500,  # Increased for narrative
+                temperature=0.8,  # Slightly higher for more creative writing
+                top_p=0.95,
                 stream=False
             )
             
             if response.choices:
-                decision = response.choices[0].message.content
-                # Clean up the decision text
-                decision = decision.strip().split('\n')[0]  # Take first line only
-                print(f"Raw decision for {self.country_name}: {decision}")  # Debug output
+                decision_text = response.choices[0].message.content
+                print(f"Raw decision for {self.country_name}: {decision_text}")  # Debug output
                 
-                # Validate and clean decision
-                decision = self._validate_decision(decision.strip())
+                # Parse the decision into action and narrative
+                decision = self._parse_decision(decision_text)
                 
                 # Check if this is a repetitive action
-                if decision in self.recent_actions:
+                if decision["action"] in [a["action"] for a in self.recent_actions]:
                     # If repeating Mobilize forces, just do nothing
-                    if decision == "Mobilize forces":
-                        return "Do nothing"
+                    if decision["action"] == "Mobilize forces":
+                        return {
+                            "action": "Do nothing",
+                            "narrative": f"As tensions remain high but no immediate action is required, {self.country_name} maintains its current position."
+                        }
                     # For other actions, only allow if it's been 3 or more turns
                     if len(self.recent_actions) < 3:
-                        return "Do nothing"
+                        return {
+                            "action": "Do nothing",
+                            "narrative": f"Given recent similar actions, {self.country_name} chooses to maintain its current stance."
+                        }
                 
                 # Add to recent actions
                 self.recent_actions.append(decision)
@@ -80,74 +93,67 @@ class LLMAgent(Agent):
                 return decision
             else:
                 print(f"No response from API for {self.country_name}")
-                return "Do nothing"
+                return {
+                    "action": "Do nothing",
+                    "narrative": f"Unable to reach a clear decision, {self.country_name} maintains its current position."
+                }
             
         except Exception as e:
             print(f"Error getting LLM decision for {self.country_name}: {e}")
-            return "Do nothing"
+            return {
+                "action": "Do nothing",
+                "narrative": f"Due to internal deliberations, {self.country_name} maintains its current position."
+            }
             
-    def _build_decision_prompt(self, perception: str) -> str:
+    def _build_decision_prompt(self, perception: str, ideology: str) -> str:
         """Build the prompt for the LLM"""
-        return f"""You are a geopolitical decision-making AI. Your task is to make a single, clear decision based on the given situation.
-
-You are the leader of {self.country_name} with a {self.personality} personality.
+        return f"""You are the leader of {self.country_name}, a {ideology} nation with a {self.personality} personality. 
+You are making decisions that will shape the course of history. Consider your nation's interests, alliances, and the broader geopolitical landscape.
 
 Current situation:
 {perception}
 
-IMPORTANT: You must respond with EXACTLY ONE of these actions, with no additional text or explanation:
-1. Declare war on [country] - Only if not already at war with them
-2. Propose alliance to [country] - Only if not already allied
-3. Help [country] against their enemies - Only if they are at war
-4. Mobilize forces - Only if not done recently
-5. Sue for peace with [country] - Only if at war with them
-6. Do nothing - If no other action makes sense
+Based on this situation, describe your next action and its rationale. Consider:
+- The historical context and precedents
+- The impact on your people and allies
+- The long-term strategic implications
+- The personal and political consequences
 
-Example valid responses:
-- Declare war on Russia
-- Propose alliance to China
-- Help France against their enemies
-- Mobilize forces
-- Sue for peace with Germany
-- Do nothing
+Your response should be a natural narrative that includes:
+1. Your decision and its immediate action
+2. Your reasoning and strategic thinking
+3. How you expect other nations to react
+4. Any specific conditions or terms you're setting
 
-Your response must be exactly one of these actions, with the appropriate country name if needed. Do not add any other text, explanations, or notes.
-Consider your recent actions to avoid repetition."""
+Example response:
+"Given the growing tensions and our historical rivalry with France, I have decided to mobilize our forces along the border. This is a defensive measure to protect our interests, though I expect it will be interpreted as provocative by some. We must be prepared for any response from our neighbors."
+
+Remember to maintain a historically appropriate tone and consider the personality and ideology of your nation."""
         
-    def _validate_decision(self, decision: str) -> str:
-        """Validate and clean up the LLM's decision"""
-        valid_actions = [
-            "Declare war on",
-            "Propose alliance to",
-            "Help",
-            "Mobilize forces",
-            "Sue for peace with",
-            "Do nothing"
-        ]
+    def _parse_decision(self, decision_text: str) -> Dict[str, Any]:
+        """Parse the LLM's narrative response into action and narrative"""
+        # Extract the core action from the narrative
+        action = "Do nothing"  # Default action
         
-        print(f"Validating decision for {self.country_name}: {decision}")  # Debug output
+        # Look for key action phrases
+        if "declare war" in decision_text.lower():
+            action = "Declare war"
+        elif "mobilize" in decision_text.lower():
+            action = "Mobilize forces"
+        elif "alliance" in decision_text.lower():
+            action = "Propose alliance"
+        elif "help" in decision_text.lower():
+            action = "Help"
+        elif "peace" in decision_text.lower():
+            action = "Sue for peace"
+            
+        # Clean up the narrative
+        narrative = decision_text.strip()
         
-        # Clean up common variations and extra text
-        decision = decision.strip()
-        decision = decision.replace("I choose to ", "")
-        decision = decision.replace("I will ", "")
-        decision = decision.replace("Let's ", "")
-        decision = decision.replace("Note:", "")
-        decision = decision.replace("This situation", "")
-        decision = decision.replace("please respond accordingly", "")
-        decision = decision.replace("accordingly", "")
-        decision = decision.replace(".", "")
+        # Remove any leading/trailing whitespace and normalize
+        narrative = " ".join(narrative.split())
         
-        # Remove any leading/trailing whitespace
-        decision = decision.strip()
-        
-        print(f"Cleaned decision for {self.country_name}: {decision}")  # Debug output
-        
-        # Check if the decision starts with any valid action
-        for action in valid_actions:
-            if decision.startswith(action):
-                print(f"Valid decision found for {self.country_name}: {decision}")  # Debug output
-                return decision
-                
-        print(f"Invalid decision format for {self.country_name}: {decision}")  # Debug output
-        return "Do nothing" 
+        return {
+            "action": action,
+            "narrative": narrative
+        } 
