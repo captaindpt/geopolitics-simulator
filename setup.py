@@ -2,11 +2,13 @@ from setuptools import setup, find_packages
 
 setup(
     name="geopolitics-simulator",
-    version="0.1",
+    version="0.1.0",
     packages=find_packages(),
     install_requires=[
-        "openai",
-        "pytest>=7.4.3",
-        "typing-extensions>=4.8.0",
+        "pytest>=8.0.0",
+        "pytest-cov>=4.1.0",
+        "mypy>=1.8.0",
+        "openai>=1.12.0",
     ],
+    python_requires=">=3.8",
 ) 

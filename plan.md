@@ -736,7 +736,8 @@ class WarSimulationVisualization:
 
 This simplified plan focuses on the core Sugarscape-like elements: simple agents with language-based rules operating in a shared environment. The LLM integration provides the semantic component you're looking for, while keeping the overall system much simpler and more testable than the previous plan. Each phase builds incrementally on the previous ones, allowing you to test thoroughly at each step.
 
-war-simulation/
+this is what the goal is for the repo structure:
+geopolitics-simulator/
 ├── src/
 │   ├── __init__.py
 │   ├── models/
@@ -766,3 +767,34 @@ war-simulation/
 ├── requirements.txt
 ├── README.md
 └── setup.py
+
+
+and this is how we gon use the llm: # pip install openai
+
+from openai import OpenAI
+
+client = OpenAI(
+		base_url = "https://vmjps1ofbtvn2w43.us-east-1.aws.endpoints.huggingface.cloud/v1/",
+		api_key = "hf_XXXXX" # api key is in env and is called HUGGINGFACE_API_KEY
+	)
+
+chat_completion = client.chat.completions.create(
+	model="tgi",
+	messages=[
+	{
+		"role": "user",
+		"content": "What is deep learning?"
+	}
+],
+	top_p=None,
+	temperature=None,
+	max_tokens=150,
+	stream=True,
+	seed=None,
+	stop=None,
+	frequency_penalty=None,
+	presence_penalty=None
+)
+
+for message in chat_completion:
+	print(message.choices[0].delta.content, end = "")
